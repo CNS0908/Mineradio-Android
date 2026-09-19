@@ -1,69 +1,125 @@
 package com.mineradio.android;
 
 import android.annotation.SuppressLint;
-import android.content.res.AssetManager;
-import android.graphics.Bitmap;
-import android.net.Uri;
+import android.graphics.Color;
 import android.os.Bundle;
+import android.util.Log;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
-import android.webkit.WebResourceRequest;
-import android.webkit.WebResourceResponse;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.webkit.WebSettings;
-import android.webkit.JavascriptInterface;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.webkit.WebViewAssetLoader;
 
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 
 public class MainActivity extends AppCompatActivity {
 
+    private static final String TAG = "MineradioMain";
+    private static final long STARTUP_TIMEOUT_MS = 120000L;
+
     private WebView webView;
     private NodeService nodeService;
+    private int serverPort = 3000;
 
     public class AndroidBridge {
         @JavascriptInterface
-        public String getPlatform() { return "android"; }
+        public String getPlatform() {
+            return "android";
+        }
 
         @JavascriptInterface
-        public boolean isAndroid() { return true; }
+        public boolean isAndroid() {
+            return true;
+        }
 
         @JavascriptInterface
         public int getServerPort() {
-            return (nodeService != null) ? nodeService.getPort() : 0;
+            return serverPort;
+        }
+
+        @JavascriptInterface
+        public void showToast(final String text) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    Toast.makeText(MainActivity.this, text, Toast.LENGTH_SHORT).show();
+                }
+            });
         }
     }
 
     @Override
-    @SuppressLint("SetJavaScriptEnabled")
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        applyImmersiveMode();
 
-        // Start Node.js backend server
         nodeService = new NodeService();
-        nodeService.start(this, () -> runOnUiThread(this::initWebView));
+        serverPort = nodeService.getPort();
+        nodeService.start(this, null);
 
-        // If server start fails or takes too long, still show UI
-        initWebView();
+        waitForBackendThenShowUi();
     }
 
-    private void initWebView() {
-        if (webView != null) return;
+    private void waitForBackendThenShowUi() {
+        final int port = serverPort;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                boolean ready = false;
+                long deadline = System.currentTimeMillis() + STARTUP_TIMEOUT_MS;
+                while (System.currentTimeMillis() < deadline) {
+                    if (isBackendUp(port)) {
+                        ready = true;
+                        break;
+                    }
+                    try {
+                        Thread.sleep(500L);
+                    } catch (InterruptedException ignored) {
+                        return;
+                    }
+                }
+                final boolean backendReady = ready;
+                Log.i(TAG, "Backend ready: " + backendReady);
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (backendReady) {
+                            showWebView("http://127.0.0.1:" + port + "/");
+                        } else {
+                            showStartupFailure();
+                        }
+                    }
+                });
+            }
+        }, "mineradio-startup").start();
+    }
 
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-                View.SYSTEM_UI_FLAG_FULLSCREEN |
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-        );
+    private boolean isBackendUp(int port) {
+        Socket socket = new Socket();
+        try {
+            socket.connect(new InetSocketAddress("127.0.0.1", port), 800);
+            return true;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            try {
+                socket.close();
+            } catch (Exception ignored) {
+                // nothing to do
+            }
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private void showWebView(String url) {
+        if (webView != null) return;
 
         webView = new WebView(this);
         setContentView(webView);
@@ -71,93 +127,37 @@ public class MainActivity extends AppCompatActivity {
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
-        settings.setAllowFileAccess(true);
-        settings.setAllowContentAccess(true);
-        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
 
         webView.addJavascriptInterface(new AndroidBridge(), "AndroidBridge");
-
-        final WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
-                .addPathHandler("/", new WebViewAssetLoader.AssetsPathHandler(this))
-                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
-                .addPathHandler("/vendor/", new WebViewAssetLoader.AssetsPathHandler(this))
-                .setDomain("mineradio.local")
-                .build();
-
-        webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                Uri uri = request.getUrl();
-
-                // Block desktop lyrics/wallpaper endpoints
-                String path = uri.getPath();
-
-                // Use asset loader for static files
-                WebResourceResponse response = assetLoader.shouldInterceptRequest(uri);
-                if (response != null) return response;
-
-                return super.shouldInterceptRequest(view, request);
-            }
-
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
-                injectDesktopStubs();
-            }
-        });
-
-        // Load from our bundled assets
-        int port = (nodeService != null) ? nodeService.getPort() : 0;
-        if (port > 0) {
-            webView.loadUrl("http://127.0.0.1:" + port + "/index.html");
-        } else {
-            webView.loadUrl("https://mineradio.local/index.html");
-        }
+        webView.setWebViewClient(new WebViewClient());
+        webView.setBackgroundColor(Color.parseColor("#08090B"));
+        webView.loadUrl(url);
     }
 
-    private void injectDesktopStubs() {
-        String js = "javascript:(function() {" +
-            "if (window.desktopWindow) return;" +
-            "window.desktopWindow = {" +
-            "  isDesktop: false," +
-            "  minimize: function(){return Promise.resolve();}," +
-            "  toggleMaximize: function(){return Promise.resolve();}," +
-            "  toggleFullscreen: function(){" +
-            "    if(document.documentElement.requestFullscreen&&!document.fullscreenElement)" +
-            "      document.documentElement.requestFullscreen();" +
-            "    else if(document.exitFullscreen) document.exitFullscreen();" +
-            "    return Promise.resolve();" +
-            "  }," +
-            "  exitFullscreenWindowed: function(){" +
-            "    if(document.fullscreenElement) document.exitFullscreen();" +
-            "    return Promise.resolve();" +
-            "  }," +
-            "  getState: function(){return Promise.resolve({isMaximized:false,isMinimized:false,isFullscreen:!!document.fullscreenElement});}," +
-            "  close: function(){/* no-op */return Promise.resolve();}," +
-            "  openNeteaseMusicLogin:function(){return Promise.resolve();}," +
-            "  clearNeteaseMusicLogin:function(){return Promise.resolve();}," +
-            "  openQQMusicLogin:function(){return Promise.resolve();}," +
-            "  clearQQMusicLogin:function(){return Promise.resolve();}," +
-            "  openUpdateInstaller:function(){return Promise.resolve();}," +
-            "  restartApp:function(){return Promise.resolve();}," +
-            "  configureGlobalHotkeys:function(){return Promise.resolve();}," +
-            "  exportJsonFile:function(){return Promise.resolve();}," +
-            "  importJsonFile:function(){return Promise.resolve();}," +
-            "  setDesktopLyricsEnabled:function(){return Promise.resolve();}," +
-            "  updateDesktopLyrics:function(){return Promise.resolve();}," +
-            "  setWallpaperMode:function(){return Promise.resolve();}," +
-            "  updateWallpaperMode:function(){return Promise.resolve();}," +
-            "  onGlobalHotkey:function(){return function(){};}," +
-            "  onDesktopLyricsLockState:function(){return function(){};}," +
-            "  onDesktopLyricsEnabledState:function(){return function(){};}," +
-            "  onStateChange:function(){return function(){};}," +
-            "};" +
-            "document.documentElement.classList.add('simple-mode-preload');" +
-            "document.body.classList.add('android-shell');" +
-        "})();";
-        webView.evaluateJavascript(js, null);
+    private void showStartupFailure() {
+        TextView message = new TextView(this);
+        message.setText("The music engine did not start in time.\n\nPlease close the app completely and open it again.");
+        message.setTextColor(Color.parseColor("#E8E8E8"));
+        message.setGravity(Gravity.CENTER);
+        message.setPadding(48, 48, 48, 48);
+        message.setBackgroundColor(Color.parseColor("#08090B"));
+        setContentView(message);
+    }
+
+    private void applyImmersiveMode() {
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
     }
 
     @Override
@@ -171,8 +171,13 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
-        if (nodeService != null) nodeService.stop();
-        if (webView != null) { webView.destroy(); webView = null; }
+        if (nodeService != null) {
+            nodeService.stop();
+        }
+        if (webView != null) {
+            webView.destroy();
+            webView = null;
+        }
         super.onDestroy();
     }
 }
