@@ -1,7 +1,6 @@
 package com.mineradio.android;
 
 import android.annotation.SuppressLint;
-import android.content.Intent;
 import android.content.res.AssetManager;
 import android.graphics.Bitmap;
 import android.net.Uri;
@@ -39,22 +38,6 @@ public class MainActivity extends AppCompatActivity {
         public int getServerPort() {
             return (nodeService != null) ? nodeService.getPort() : 0;
         }
-
-        @JavascriptInterface
-        public void openExternalBrowser(String url) {
-            try {
-                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(intent);
-            } catch (Exception e) {
-                Toast.makeText(MainActivity.this, "閺冪姵纭堕幍鎾崇磻濞村繗顫嶉崳? " + e.getMessage(), Toast.LENGTH_SHORT).show();
-            }
-        }
-
-        @JavascriptInterface
-        public void showToast(String msg) {
-            Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
-        }
     }
 
     @Override
@@ -62,9 +45,11 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // Start Node.js backend server
         nodeService = new NodeService();
         nodeService.start(this, () -> runOnUiThread(this::initWebView));
 
+        // If server start fails or takes too long, still show UI
         initWebView();
     }
 
@@ -82,21 +67,9 @@ public class MainActivity extends AppCompatActivity {
 
         webView = new WebView(this);
         setContentView(webView);
-        webView.setWebChromeClient(new android.webkit.WebChromeClient() {
-            @Override
-            public boolean onCreateWindow(android.webkit.WebView view, boolean isDialog, boolean isUserGesture, android.os.Message resultMsg) {
-                android.webkit.WebView newView = new android.webkit.WebView(MainActivity.this);
-                android.webkit.WebView.WebViewTransport transport = (android.webkit.WebView.WebViewTransport) resultMsg.obj;
-                transport.setWebView(newView);
-                resultMsg.sendToTarget();
-                return true;
-            }
-        });
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
-        settings.setSupportMultipleWindows(true);
-        settings.setJavaScriptCanOpenWindowsAutomatically(true);
         settings.setDomStorageEnabled(true);
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
@@ -117,9 +90,14 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
+
+                // Block desktop lyrics/wallpaper endpoints
                 String path = uri.getPath();
+
+                // Use asset loader for static files
                 WebResourceResponse response = assetLoader.shouldInterceptRequest(uri);
                 if (response != null) return response;
+
                 return super.shouldInterceptRequest(view, request);
             }
 
@@ -128,24 +106,9 @@ public class MainActivity extends AppCompatActivity {
                 super.onPageFinished(view, url);
                 injectDesktopStubs();
             }
-
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                String url = request.getUrl().toString();
-                if (url.startsWith("https://mineradio.local/") || url.startsWith("http://127.0.0.1:")) {
-                    return false;
-                }
-                try {
-                    Intent intent = new Intent(Intent.ACTION_VIEW, request.getUrl());
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivity(intent);
-                } catch (Exception e) {
-                    Toast.makeText(MainActivity.this, "閺冪姵纭堕幍鎾崇磻闁剧偓甯?, Toast.LENGTH_SHORT).show();
-                }
-                return true;
-            }
         });
 
+        // Load from our bundled assets
         int port = (nodeService != null) ? nodeService.getPort() : 0;
         if (port > 0) {
             webView.loadUrl("http://127.0.0.1:" + port + "/index.html");
@@ -157,8 +120,8 @@ public class MainActivity extends AppCompatActivity {
     private void injectDesktopStubs() {
         String js = "javascript:(function() {" +
             "if (window.desktopWindow) return;" +
-            "window.desktopWindow = { apiBase: "https://YOUR-RAILWAY-URL.up.railway.app"," +
-            "  isDesktop: true," +
+            "window.desktopWindow = {" +
+            "  isDesktop: false," +
             "  minimize: function(){return Promise.resolve();}," +
             "  toggleMaximize: function(){return Promise.resolve();}," +
             "  toggleFullscreen: function(){" +
@@ -173,17 +136,9 @@ public class MainActivity extends AppCompatActivity {
             "  }," +
             "  getState: function(){return Promise.resolve({isMaximized:false,isMinimized:false,isFullscreen:!!document.fullscreenElement});}," +
             "  close: function(){/* no-op */return Promise.resolve();}," +
-            "  openNeteaseMusicLogin:function(){" +
-            "    if(window.AndroidBridge)window.AndroidBridge.showToast('鐠囧嘲婀鐟板毉閻ㄥ嫭绁荤憴鍫濇珤娑擃厾娅ヨぐ鏇犵秹閺勬挷绨棅鍏呯\\n閻ц缍嶉崥搴℃礀閸掔増婀版い鍨閸斻劎鐭樼拹纰縪okie');" +
-            "    if(window.AndroidBridge)window.AndroidBridge.openExternalBrowser('https://music.163.com/#/login');" +
-            "    return Promise.resolve({ok:true,cookie:''});" +
-            "  }," +
+            "  openNeteaseMusicLogin:function(){return Promise.resolve();}," +
             "  clearNeteaseMusicLogin:function(){return Promise.resolve();}," +
-            "  openQQMusicLogin:function(){" +
-            "    if(window.AndroidBridge)window.AndroidBridge.showToast('鐠囧嘲婀鐟板毉閻ㄥ嫭绁荤憴鍫濇珤娑擃厾娅ヨぐ鏄婹闂婂厖绠癨\n閻ц缍嶉崥搴℃礀閸掔増婀版い鍨閸斻劎鐭樼拹纰縪okie');" +
-            "    if(window.AndroidBridge)window.AndroidBridge.openExternalBrowser('https://y.qq.com/n/ryqq/profile');" +
-            "    return Promise.resolve({ok:true,cookie:''});" +
-            "  }," +
+            "  openQQMusicLogin:function(){return Promise.resolve();}," +
             "  clearQQMusicLogin:function(){return Promise.resolve();}," +
             "  openUpdateInstaller:function(){return Promise.resolve();}," +
             "  restartApp:function(){return Promise.resolve();}," +
@@ -201,15 +156,6 @@ public class MainActivity extends AppCompatActivity {
             "};" +
             "document.documentElement.classList.add('simple-mode-preload');" +
             "document.body.classList.add('android-shell');" +
-            
-            "var _origFetch = window.fetch;" +
-            "window.__apiBase = "https://YOUR-RAILWAY-URL.up.railway.app"; window.fetch = function(url, opts) { if (typeof url === \"string\" \u0026\u0026 url.startsWith(\"/api/\")) { url = window.__apiBase + url; }" +
-            "  if (typeof url === 'string' && url.startsWith('/api/')) {" +
-            "    if (window.AndroidBridge) window.AndroidBridge.showToast('闂団偓鐟曚礁鎮楃粩顖涙箛閸斺€虫珤閺€顖涘瘮鐎瑰本鏆ｉ崝鐔诲厴');" +
-            "    return Promise.resolve({json:function(){return Promise.resolve({error:'backend not available',loggedIn:false,playlists:[],tracks:[],songs:[]});}});" +
-            "  }" +
-            "  return _origFetch.call(window, url, opts);" +
-            "};" +
         "})();";
         webView.evaluateJavascript(js, null);
     }
