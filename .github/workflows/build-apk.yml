@@ -25,21 +25,50 @@ jobs:
       - name: Create local.properties
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-      - name: Accept Android SDK licenses
-        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
+      - name: Install Android NDK and CMake
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1" > /dev/null
+          ls -d $ANDROID_HOME/ndk/*
 
-      - name: Generate Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.5
+      - name: Download Node.js mobile runtime
+        run: |
+          set -e
+          curl -L --retry 3 --retry-delay 5 -o /tmp/nodejs-mobile-android.zip \
+            https://github.com/nodejs-mobile/nodejs-mobile/releases/download/v18.20.4/nodejs-mobile-v18.20.4-android.zip
+          rm -rf /tmp/njm && mkdir -p /tmp/njm
+          unzip -q /tmp/nodejs-mobile-android.zip -d /tmp/njm
+          mkdir -p app/libnode/bin app/libnode/include
+          find /tmp/njm -name 'libnode.so' -type f | while IFS= read -r so; do
+            abi=$(basename "$(dirname "$so")")
+            mkdir -p "app/libnode/bin/$abi"
+            cp "$so" "app/libnode/bin/$abi/libnode.so"
+            echo "packed libnode.so for ABI: $abi"
+          done
+          INC=$(find /tmp/njm -type d -path '*include/node' | head -n1)
+          cp -r "$INC" app/libnode/include/
+          find app/libnode/bin -name 'libnode.so' -exec ls -lh {} \;
+
+      - name: Stage web assets for the embedded server
+        run: |
+          mkdir -p app/src/main/assets/nodejs-project/public
+          cp app/src/main/assets/index.html app/src/main/assets/nodejs-project/public/
+          cp -r app/src/main/assets/vendor app/src/main/assets/nodejs-project/public/
+          cp -r app/src/main/assets/assets app/src/main/assets/nodejs-project/public/
+          find app/src/main/assets/nodejs-project/public -maxdepth 2
 
       - name: Install Node.js backend dependencies
         run: |
           cd app/src/main/assets/nodejs-project
-          npm install --production
+          npm install --omit=dev --no-audit --no-fund
+
+      - name: Generate Gradle Wrapper
+        run: gradle wrapper --gradle-version 8.5
 
       - name: Build Release APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease
+          ./gradlew assembleRelease --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
