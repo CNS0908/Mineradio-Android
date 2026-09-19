@@ -41,6 +41,10 @@ jobs:
           mkdir -p app/libnode/bin app/libnode/include
           find /tmp/njm -name 'libnode.so' -type f | while IFS= read -r so; do
             abi=$(basename "$(dirname "$so")")
+            if [ "$abi" != "arm64-v8a" ] && [ "$abi" != "armeabi-v7a" ]; then
+              echo "skipping ABI: $abi"
+              continue
+            fi
             mkdir -p "app/libnode/bin/$abi"
             cp "$so" "app/libnode/bin/$abi/libnode.so"
             echo "packed libnode.so for ABI: $abi"
@@ -48,6 +52,12 @@ jobs:
           INC=$(find /tmp/njm -type d -path '*include/node' | head -n1)
           cp -r "$INC" app/libnode/include/
           find app/libnode/bin -name 'libnode.so' -exec ls -lh {} \;
+
+      - name: Align native runtime for 16 KB page devices
+        run: |
+          for abi in arm64-v8a armeabi-v7a; do
+            node tools/repack-elf-16k.js "app/libnode/bin/$abi/libnode.so"
+          done
 
       - name: Stage web assets for the embedded server
         run: |
@@ -69,6 +79,11 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
+
+      - name: Show APK contents
+        run: |
+          ls -lh app/build/outputs/apk/release/
+          unzip -l app/build/outputs/apk/release/*.apk | grep -E 'libnode|libnative-lib' || true
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
